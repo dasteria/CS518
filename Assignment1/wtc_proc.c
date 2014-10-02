@@ -20,36 +20,51 @@
 
 
 int procCount;                /* Counter of forks */
-int ticks,warmup;             /* Variable for measuring CPU time */
 int _vertice;	              /* Number of vertices for the graph we are calculating */
 int _thread;                  /* Number of threads to compute in parallel */
-int jWar,kWar;                /* Loop variables for Warshall's algorithm */
+int jWar;             /* Loop variables for Warshall's algorithm */
 
 FILE *my_file;                /* Pointer to input file */
 char buf[] = "graph.in";
 int outX,outY;
+
 key_t shmkey;                 /* key to be passed to shmget() */
 int shmflg;                   /* shmflg to be passed to shmget() */
 int shmid;                    /* return value from shmget() */
-sem_t *sem;                   /*      synch semaphore         */
+sem_t** sem_array;               /* Pointer to semphore array */
+
 int matrixSize;               /* size to be passed to shmget() */
 int** matrix;                 /* pointer to the matrix representation of graph */
-int warmup;
-
 
 key_t shmkey_i;
 int shmflg_i;
 int shmid_i;
 int *iWar;                    /* Parallel computed loop variable in shared memory */
 
+key_t shmkey_k;
+int shmflg_k;
+int shmid_k;
+int *kWar;                    /* Parallel computed loop variable in shared memory */
+
+key_t shmkey_sem;                 /* key to be passed to shmget() */
+int shmflg_sem;                   /* shmflg to be passed to shmget() */
+int shmid_sem;                    /* return value from shmget() */
+
+sem_t *sem_issue_newI_parent;                   /*      synch semaphore         */
+sem_t *sem_newI_child;
+sem_t *sem_i_complete_parent;
+sem_t *sem_share_complete_child;
+
 /*
 * List of methods needed
 */
 
 void Create_shm(void);	// Create shared memory to store matrix representation of the graph
+void Create_semaphore(void); // Create semaphores needed to compute
 void Ini_graph(int** mat); // Read input file, number of vertices and 2D transition matrix
-void Comp_TranCls(int numVer, int** mat); // Take the 2D matrix and change it to the transitive closure matrix result
 void Print_graph(void);	// Output the graph to verify result
+void Clean_Up(void); // Delete and unattach shared memory and semaphores
+void Create_Sem_Array(int n); // Create an array of semaphores for each process
 
 
 // Start of rdstc clock reading
@@ -95,11 +110,14 @@ void Create_shm(void)
   _vertice = numVertex;
   shmkey = ftok ("/dev", 1);
   shmkey_i= ftok("/dev/disk",1);
+  shmkey_k = ftok("/dev/bus",1);
   printf ("Matrix shmkey = %d\n\n", shmkey);
   printf ("i shmkey = %d\n\n",shmkey_i);
+  printf("k shmkey = %d\n\n",shmkey_k);
   int size = numVertex * sizeof(int*) + numVertex*numVertex * sizeof(int*) + sizeof(int*);
   shmid = shmget (shmkey, size, 0666 | IPC_CREAT);
   shmid_i = shmget(shmkey_i,sizeof(int*),0666 | IPC_CREAT);
+  shmid_k = shmget(shmkey_k,sizeof(int*),0666 | IPC_CREAT);
   // printf ("The matrix(%p) is allocated in shared memory.\n", matrix);
   if (shmid < 0 || shmid_i<0)
     {
@@ -109,10 +127,41 @@ void Create_shm(void)
 
   matrix = (int **) shmat (shmid, NULL, 0); /* attach matrix to shared memory */
   iWar = (int*) shmat(shmid_i,NULL,0);
+  kWar = (int*) shmat(shmid_k,NULL,0);
   printf ("The matrix(%p) is allocated in shared memory.\n\n", matrix);
   printf ("The i loop variable(%p) is allocated in shared memory.\n\n",iWar);
+  printf("The k loop variable (%p) is allocated in shared memory.\n\n",kWar);
 }
 
+void Create_Sem_Array(int n)
+{
+    int i;
+    shmkey_sem = ftok ("/dev/cpu", 1);
+    printf("Semaphore array shmkey = %d\n\n",shmkey_sem);
+
+    int size = n * sizeof(sem_t*);
+    shmid_sem = shmget(shmkey_sem,size,0666 | IPC_CREAT);
+    sem_array = (sem_t**) shmat(shmid_sem,NULL,0);
+    // int *head = (int*) sem_array;
+    for(i=0;i<n;i++)
+      {
+	//sem_array[i] = head + i;
+        sem_array[i] = sem_open ("Sem", O_CREAT | O_EXCL, 0644, 0); 
+	sem_unlink("Sem");
+	printf("The pointer for semaphore array[%d] is %p\n",i,sem_array[i]);
+      }
+    
+}
+
+void Delete_Sem_Array(int n)
+{
+  int i;
+  for(i=0;i<n;i++)
+    {
+      	sem_destroy(sem_array[i]);
+    }
+
+}
 
 void Ini_graph(int** matrix)
 {
@@ -126,6 +175,7 @@ void Ini_graph(int** matrix)
     }
 
   *iWar = 0;
+  *kWar = 0;
 
   for(x=0;x<_vertice;x++)
     {
@@ -150,24 +200,74 @@ void Ini_graph(int** matrix)
    printf("\nMatrix initialization complete.\n");
 }
 
+void Clean_Up(void)
+{
+         /* shared memory detach */
+        shmdt (matrix);
+        shmctl (shmid, IPC_RMID, 0);
 
+        shmdt (iWar);
+        shmctl (shmid_i, IPC_RMID, 0);
+
+	shmdt(kWar);
+	shmctl(shmid_k,IPC_RMID,0);
+
+        /* cleanup semaphores */
+        sem_destroy (sem_issue_newI_parent);
+	sem_destroy (sem_newI_child);
+	sem_destroy (sem_i_complete_parent);
+	sem_destroy (sem_share_complete_child);
+	Delete_Sem_Array(_vertice);
+	printf("\n\nSemaphore closed.\n\n");
+}
+
+void Create_Semaphore(void)
+{
+     /* initialize semaphores for shared processes */
+    sem_issue_newI_parent = sem_open ("Sem1", O_CREAT | O_EXCL, 0644, 0); 
+    sem_unlink ("Sem1");      
+
+    sem_newI_child = sem_open ("Sem2", O_CREAT | O_EXCL, 0644, 0); 
+    sem_unlink ("Sem2");  
+
+    sem_i_complete_parent = sem_open ("Sem3", O_CREAT | O_EXCL, 0644, 0); 
+    sem_unlink ("Sem3");  
+
+    sem_share_complete_child = sem_open ("Sem4", O_CREAT | O_EXCL, 0644, 0); 
+    sem_unlink ("Sem4");  
+
+    printf ("semaphores initialized. \n\n");
+
+}
+
+void Print_graph(void)
+{
+
+// Print out the transitive closure matrix for comparison
+printf("\nMatrix representation of graph: \n");
+
+ for(outX=0;outX<_vertice;outX++)
+   {
+     for(outY=0;outY<_vertice;outY++)
+       {
+	 printf("%d ",matrix[outX][outY]);
+       }
+     printf("\n");
+   }
+
+}
 
 int main()
 {
   pid_t pid;
   unsigned long long tickStart,tickEnd;
   Create_shm();
+  Create_Semaphore();
+  Create_Sem_Array(_vertice);
   Ini_graph(matrix);
   // Print out input graph matrix for checking purpose
   printf("\nInitial graph matrix: \n");
-  for(outX=0;outX<_vertice;outX++)
-    {
-      for(outY=0;outY<_vertice;outY++)
-	{
-	  printf("%d ",matrix[outX][outY]);
-	}
-      printf("\n");
-    }
+  Print_graph();
 
     /* initialize semaphores for shared processes */
     // Semaphore type : unnamed
@@ -186,13 +286,7 @@ int main()
 //sem = sem_open(sem_name, O_CREAT, 0644, 1);
 //printf("\n\n Semaphore opend.\n\n");
 
-    /* initialize semaphores for shared processes */
-    sem = sem_open ("pSem", O_CREAT | O_EXCL, 0644, 1); 
-    /* name of semaphore is "pSem", semaphore is reached using this name */
-    sem_unlink ("pSem");      
-    /* unlink prevents the semaphore existing forever */
-    /* if a crash occurs during the execution         */
-    printf ("semaphores initialized.  \n\n");
+
 
 // Warmup for RDSTC
 rdtsc_begin();
@@ -221,94 +315,33 @@ tickStart  = rdtsc_begin();
 	  break;
     }
 
-   /********************************************************/
-   /***********    Task of child processes   ***************/
-   /********************************************************/
-
-    if(pid==0) 
-     {
-       sem_wait (sem);      // Ask for semaphore resource
-       printf ("\nChild process (#%d) is running.\n",(int) getpid());
-        
-       // The Warshall's algorithm
-       while(kWar<_vertice)
-	 {
-	   {
-	   while(*iWar<_vertice)
-	     {
-	       printf("Process #%d computing k=%d i=%d.\n",(int)getpid(),kWar,*iWar);
-	       for (jWar=0; jWar < _vertice; jWar++)
-		 {
-		   matrix[*iWar][jWar] = matrix[*iWar][jWar] || (matrix[*iWar][kWar] && matrix[kWar][jWar]);
-		 }
-
-	       printf("\nProcess #%d done computering l=%d i=%d, semaphore released.\n\n",(int)getpid(),kWar,*iWar);
-	       *iWar = *iWar +1;
-	       sem_post (sem);      // Release semaphore resource
-	       exit(0);
-
-	     }
-	
-     }
+    /*****************************************************/
+    /*****************  Parent Process *******************/
+    /*****************************************************/
 
 
-   /********************************************************/
-   /***********    Task of parent processes   **************/
-   /********************************************************/
+    /*****************************************************/
+    /*****************  Child Process ********************/
+    /*****************************************************/
 
-    if (pid != 0)
-      {
-        /* wait for all children to exit */
-        while (pid = waitpid (-1, NULL, 0)){
-            if (errno == ECHILD)
-                break;
-        }
-
-        printf ("\nParent: All children have exited.\n");
 
 	   //End counting CPU ticks
 	tickEnd = rdtsc_end();
 	tickEnd = tickEnd - tickStart;
 
-	printf("cycles spent : %llu\n",tickEnd);
-	printf("Time spent : %e (us)\n",(tickEnd)/2394.468);
+	printf("\nCycles spent : %llu\n",tickEnd);
+	printf("\nTime spent : %e (us)\n",(tickEnd)/2394.468);
 	
 	Print_graph();
 
-        /* shared memory detach */
-        shmdt (matrix);
-        shmctl (shmid, IPC_RMID, 0);
-
-        shmdt (iWar);
-        shmctl (shmid_i, IPC_RMID, 0);
-
-        /* cleanup semaphores */
-        sem_destroy (sem);
-	printf("\n\nSemaphore closed.\n\n");
+	Clean_Up();
         exit (0);
-    }   
-
-    return 0;
-
-}
+	return 0;
+}   
 
 
-void Print_graph(void)
-{
 
-// Print out the transitive closure matrix for comparison
-printf("\nTransitive closure graph matrix: \n");
 
- for(outX=0;outX<_vertice;outX++)
-   {
-     for(outY=0;outY<_vertice;outY++)
-       {
-	 printf("%d ",matrix[outX][outY]);
-       }
-     printf("\n");
-   }
-
-}
 
 
 
