@@ -23,7 +23,8 @@ int procCount;                /* Counter of forks */
 int ticks,warmup;             /* Variable for measuring CPU time */
 int _vertice;	              /* Number of vertices for the graph we are calculating */
 int _thread;                  /* Number of threads to compute in parallel */
-int iWar,jWar,kWar;           /* Loop variables for Warshall's algorithm */
+int jWar,kWar;                /* Loop variables for Warshall's algorithm */
+
 FILE *my_file;                /* Pointer to input file */
 char buf[] = "graph.in";
 int outX,outY;
@@ -34,8 +35,12 @@ sem_t *sem;                   /*      synch semaphore         */
 int matrixSize;               /* size to be passed to shmget() */
 int** matrix;                 /* pointer to the matrix representation of graph */
 int warmup;
-pid_t pid;
 
+
+key_t shmkey_i;
+int shmflg_i;
+int shmid_i;
+int *iWar;                    /* Parallel computed loop variable in shared memory */
 
 /*
 * List of methods needed
@@ -46,25 +51,27 @@ void Ini_graph(int** mat); // Read input file, number of vertices and 2D transit
 void Comp_TranCls(int numVer, int** mat); // Take the 2D matrix and change it to the transitive closure matrix result
 void Print_graph(void);	// Output the graph to verify result
 
-static __inline__ unsigned long long rdtsc(void)
+
+// Start of rdstc clock reading
+static __inline__ unsigned long long rdtsc_begin(void)
 {
-  unsigned cycles_high,cycles_low,cycles_high1,cycles_low1;
+  unsigned cycles_high,cycles_low;
 
  __asm__ __volatile__
 (
-
 "CPUID\n\t"/*serialize*/
 "RDTSC\n\t"/*read the clock*/
 "mov %%edx, %0\n\t"
 "mov %%eax, %1\n\t": "=r" (cycles_high), "=r"
-(cycles_low):: "%rax", "%rbx", "%rcx", "%rdx"
+(cycles_low):: "%rax", "%rbx", "%rcx", "%rdx"); 
+  return ( (unsigned long long)cycles_low)|( ((unsigned long long)cycles_high)<<32);
+}
 
-); 
+// End of rdstc clock reading
+static __inline__ unsigned long long rdtsc_end(void)
+{
 
-/*
-Call the function to benchmark
-*/
-
+  unsigned cycles_high1,cycles_low1;
  __asm__ __volatile__
 (
 
@@ -72,62 +79,7 @@ Call the function to benchmark
 "mov %%edx, %0\n\t"
 "mov %%eax, %1\n\t"
 "CPUID\n\t": "=r" (cycles_high1), "=r"
-(cycles_low1):: "%rax", "%rbx", "%rcx", "%rdx"
-
-);
-
- __asm__ __volatile__
-(
-
-"CPUID\n\t"/*serialize*/
-"RDTSC\n\t"/*read the clock*/
-"mov %%edx, %0\n\t"
-"mov %%eax, %1\n\t": "=r" (cycles_high), "=r"
-(cycles_low):: "%rax", "%rbx", "%rcx", "%rdx"
-
-); 
-
-/*
-Call the function to benchmark
-*/
-
- __asm__ __volatile__
-(
-
-"RDTSCP\n\t"/*read the clock*/
-"mov %%edx, %0\n\t"
-"mov %%eax, %1\n\t"
-"CPUID\n\t": "=r" (cycles_high1), "=r"
-(cycles_low1):: "%rax", "%rbx", "%rcx", "%rdx"
-
-);
-
- __asm__ __volatile__
-(
-
-"CPUID\n\t"/*serialize*/
-"RDTSC\n\t"/*read the clock*/
-"mov %%edx, %0\n\t"
-"mov %%eax, %1\n\t": "=r" (cycles_high), "=r"
-(cycles_low):: "%rax", "%rbx", "%rcx", "%rdx"
-
-); 
-
-/*
-Call the function to benchmark
-*/
-
- __asm__ __volatile__
-(
-
-"RDTSCP\n\t"/*read the clock*/
-"mov %%edx, %0\n\t"
-"mov %%eax, %1\n\t"
-"CPUID\n\t": "=r" (cycles_high1), "=r"
-(cycles_low1):: "%rax", "%rbx", "%rcx", "%rdx"
-
-);
-
+(cycles_low1):: "%rax", "%rbx", "%rcx", "%rdx");
   return ( (unsigned long long)cycles_low1)|( ((unsigned long long)cycles_high1)<<32 );
 }
 
@@ -142,19 +94,23 @@ void Create_shm(void)
   _thread = numThread;
   _vertice = numVertex;
   shmkey = ftok ("/dev", 1);
-  printf ("shmkey = %d\n", shmkey);
-  int size = numVertex * sizeof(int*) + numVertex*numVertex * sizeof(int*);
+  shmkey_i= ftok("/dev/disk",1);
+  printf ("Matrix shmkey = %d\n\n", shmkey);
+  printf ("i shmkey = %d\n\n",shmkey_i);
+  int size = numVertex * sizeof(int*) + numVertex*numVertex * sizeof(int*) + sizeof(int*);
   shmid = shmget (shmkey, size, 0666 | IPC_CREAT);
-  printf ("The matrix(%p) is allocated in shared memory.\n", matrix);
-  
-  if (shmid < 0)
+  shmid_i = shmget(shmkey_i,sizeof(int*),0666 | IPC_CREAT);
+  // printf ("The matrix(%p) is allocated in shared memory.\n", matrix);
+  if (shmid < 0 || shmid_i<0)
     {
       perror ("shmget\n");
       exit (1);
     }
 
   matrix = (int **) shmat (shmid, NULL, 0); /* attach matrix to shared memory */
-  printf ("The matrix(%p) is allocated in shared memory.\n", matrix);
+  iWar = (int*) shmat(shmid_i,NULL,0);
+  printf ("The matrix(%p) is allocated in shared memory.\n\n", matrix);
+  printf ("The i loop variable(%p) is allocated in shared memory.\n\n",iWar);
 }
 
 
@@ -166,8 +122,10 @@ void Ini_graph(int** matrix)
   for(i=0;i<_vertice;i++)
     {
       matrix[i] = head + i*_vertice;
-      printf("The pointer for i(%d) is %p \n",i,matrix[i]);
+      printf("The pointer for Matraix[%d] is %p \n",i,matrix[i]);
     }
+
+  *iWar = 0;
 
   for(x=0;x<_vertice;x++)
     {
@@ -180,23 +138,23 @@ void Ini_graph(int** matrix)
 	}
     }
 
-printf("Matrix initialization complete.\n");
-
-
 // Iterate through inputs and save 1 for each direct path
  while(fgets(buf,10,my_file)!=NULL)
    {
      fscanf(my_file,"%i %i",&start,&end);
-     printf("This pair of input is %i %i \n",start,end);
+     //printf("This pair of input is %i %i \n",start,end);
      matrix[start-1][end-1] = 1;
    }
      fclose (my_file);
+
+   printf("\nMatrix initialization complete.\n");
 }
 
 
 
 int main()
 {
+  pid_t pid;
   unsigned long long tickStart,tickEnd;
   Create_shm();
   Ini_graph(matrix);
@@ -212,111 +170,127 @@ int main()
     }
 
     /* initialize semaphores for shared processes */
-    sem = sem_open ("pSem", O_CREAT | O_EXCL, 0666, 100); 
+    // Semaphore type : unnamed
+    // pshared = 10, shared amoung processes
+    // initial semaphore value: 1
+    //if(sem_init(&sem,0,1) == 0 )
+    // printf("\n\nFailed to initialize unnamed semaphore.\n\n");
+    // else
+    // printf ("\n\nInitialized unnamed semaphore, share between processes. \n\n");
+
+
+// the absolute path to the semaphore
+//const char sem_name[] = "/tmp/sem";
+
+// 0644 is the permission of the semaphore
+//sem = sem_open(sem_name, O_CREAT, 0644, 1);
+//printf("\n\n Semaphore opend.\n\n");
+
+    /* initialize semaphores for shared processes */
+    sem = sem_open ("pSem", O_CREAT | O_EXCL, 0644, 1); 
     /* name of semaphore is "pSem", semaphore is reached using this name */
     sem_unlink ("pSem");      
     /* unlink prevents the semaphore existing forever */
     /* if a crash occurs during the execution         */
-    printf ("\n\nsemaphores initialized.\n\n");
-
+    printf ("semaphores initialized.  \n\n");
 
 // Warmup for RDSTC
+rdtsc_begin();
+rdtsc_end();
+rdtsc_begin();
+rdtsc_end();
+rdtsc_begin();
+rdtsc_end();
+rdtsc_begin();
+rdtsc_end();
+rdtsc_begin();
+rdtsc_end();
 
-/*
-  for(warmup=0;warmup<100;warmup++)
+// Start counting CPU ticks
+tickStart  = rdtsc_begin();
+
+    /* initialize fork processes */
+    /* fork child processes */
+    for (procCount = 0; procCount < _thread ;procCount++)
     {
-      ticks = rdtsc();
+        pid = fork ();
+        if (pid < 0)              /* check for error      */
+            printf ("Fork error.\n");
+        else if (pid == 0)
+	  // printf("Child process created. PID %d",(int)getpid());
+	  break;
     }
-*/
 
-// Actually start timing
-//  ticks = rdtsc();
+   /********************************************************/
+   /***********    Task of child processes   ***************/
+   /********************************************************/
 
-
-
-    /* initialize fork processes  */
-      for(procCount=0;procCount<_thread;procCount++)
-	{
-	  pid = fork();
-	  if(pid<0)
-	    printf("Fork error\n");
-	  else if(pid==0)
-	    break;
-	}
-
-
-  
-tickStart  = rdtsc();
-
-
-
-    /****************************************************/
-    /************  Task of parent process ***************/
-    /****************************************************/
-
-
-      if (pid != 0)
+    if(pid==0) 
      {
+       sem_wait (sem);      // Ask for semaphore resource
+       printf ("\nChild process (#%d) is running.\n",(int) getpid());
+        
+       // The Warshall's algorithm
+       while(kWar<_vertice)
+	 {
+	   {
+	   while(*iWar<_vertice)
+	     {
+	       printf("Process #%d computing k=%d i=%d.\n",(int)getpid(),kWar,*iWar);
+	       for (jWar=0; jWar < _vertice; jWar++)
+		 {
+		   matrix[*iWar][jWar] = matrix[*iWar][jWar] || (matrix[*iWar][kWar] && matrix[kWar][jWar]);
+		 }
+
+	       printf("\nProcess #%d done computering l=%d i=%d, semaphore released.\n\n",(int)getpid(),kWar,*iWar);
+	       *iWar = *iWar +1;
+	       sem_post (sem);      // Release semaphore resource
+	       exit(0);
+
+	     }
+	
+     }
+
+
+   /********************************************************/
+   /***********    Task of parent processes   **************/
+   /********************************************************/
+
+    if (pid != 0)
+      {
         /* wait for all children to exit */
-        while (pid = waitpid (-1, NULL, 0))
-	{
+        while (pid = waitpid (-1, NULL, 0)){
             if (errno == ECHILD)
                 break;
         }
-	tickEnd    = rdtsc();
-tickEnd = tickEnd - tickStart;
-
-printf("cycles spent : %llu\n",tickEnd);
-printf("Time spent : %llu (ms)\n",(tickEnd)/2394468);
 
         printf ("\nParent: All children have exited.\n");
-	// ticks = rdtsc()- ticks;
+
+	   //End counting CPU ticks
+	tickEnd = rdtsc_end();
+	tickEnd = tickEnd - tickStart;
+
+	printf("cycles spent : %llu\n",tickEnd);
+	printf("Time spent : %e (us)\n",(tickEnd)/2394.468);
+	
 	Print_graph();
 
         /* shared memory detach */
         shmdt (matrix);
         shmctl (shmid, IPC_RMID, 0);
 
+        shmdt (iWar);
+        shmctl (shmid_i, IPC_RMID, 0);
+
         /* cleanup semaphores */
         sem_destroy (sem);
+	printf("\n\nSemaphore closed.\n\n");
         exit (0);
-    } 
+    }   
 
+    return 0;
 
-   /********************************************************/
-   /***********    Task of child processes   ***************/
-   /********************************************************/
-
-    else
-    {
-        sem_wait (sem);           /* P operation */
-        printf ("  Child(%d) is in critical section.\n", procCount);
-        sleep (1);
-        
-        // The Warshall's algorithm
-  for (kWar = 0; kWar < _vertice; kWar++)
-    {
-      for(iWar=0;iWar<_vertice;iWar++)
-	  {
-	     for (jWar = 0; jWar < _vertice; jWar++)
-		 {
-		     matrix[iWar][jWar] = matrix[iWar][jWar] || (matrix[iWar][kWar] && matrix[kWar][jWar]);
-		 }
-	  }
-	    
-	
-    }
-        sem_post (sem);           /* V operation */
-        exit (0);
-    }
-
-
-      return 0;
 }
-
-
-
-
 
 
 void Print_graph(void)
@@ -333,19 +307,11 @@ printf("\nTransitive closure graph matrix: \n");
        }
      printf("\n");
    }
- // printf ("\nTicks elapsed for Warshall's algorithm: %d\n", ticks);
- // printf ("Time elapsed: %e ns\n\n",(ticks*1000)/2394.468);
 
 }
 
 
-/*
-uint64_t rdtsc()
-{
-  uint32_t hi, lo;
-  __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
-  return (uint64_t)lo|((uint64_t)hi<<32);
-}
-*/
+
+
 
 
