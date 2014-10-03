@@ -211,30 +211,33 @@ void Clean_Up(void)
 
 	shmdt(kWar);
 	shmctl(shmid_k,IPC_RMID,0);
+	printf("\nShared memory detached.\n");
 
         /* cleanup semaphores */
         sem_destroy (sem_issue_newI_parent);
-	sem_destroy (sem_newI_child);
-	sem_destroy (sem_i_complete_parent);
-	sem_destroy (sem_share_complete_child);
-	Delete_Sem_Array(_vertice);
-	printf("\n\nSemaphore closed.\n\n");
+	//	sem_destroy (sem_newI_child);
+	//sem_destroy (sem_i_complete_parent);
+	//sem_destroy (sem_share_complete_child);
+	Delete_Sem_Array(_thread);
+	shmdt(sem_array);
+	shmctl(shmid_sem,IPC_RMID,0);
+	printf("\nSemaphore closed.\n\n");
 }
 
 void Create_Semaphore(void)
 {
      /* initialize semaphores for shared processes */
-    sem_issue_newI_parent = sem_open ("Sem1", O_CREAT | O_EXCL, 0644, 0); 
+    sem_issue_newI_parent = sem_open ("Sem1", O_CREAT | O_EXCL, 0644, 1); 
     sem_unlink ("Sem1");      
 
-    sem_newI_child = sem_open ("Sem2", O_CREAT | O_EXCL, 0644, 0); 
-    sem_unlink ("Sem2");  
+    // sem_newI_child = sem_open ("Sem2", O_CREAT | O_EXCL, 0644, 0); 
+    // sem_unlink ("Sem2");  
 
-    sem_i_complete_parent = sem_open ("Sem3", O_CREAT | O_EXCL, 0644, 0); 
-    sem_unlink ("Sem3");  
+    //sem_i_complete_parent = sem_open ("Sem3", O_CREAT | O_EXCL, 0644, 0); 
+    //sem_unlink ("Sem3");  
 
-    sem_share_complete_child = sem_open ("Sem4", O_CREAT | O_EXCL, 0644, 0); 
-    sem_unlink ("Sem4");  
+    //sem_share_complete_child = sem_open ("Sem4", O_CREAT | O_EXCL, 0644, 0); 
+    //sem_unlink ("Sem4");  
 
     printf ("semaphores initialized. \n\n");
 
@@ -263,7 +266,7 @@ int main()
   unsigned long long tickStart,tickEnd;
   Create_shm();
   Create_Semaphore();
-  Create_Sem_Array(_vertice);
+  Create_Sem_Array(_thread);
   Ini_graph(matrix);
   // Print out input graph matrix for checking purpose
   printf("\nInitial graph matrix: \n");
@@ -287,7 +290,6 @@ int main()
 //printf("\n\n Semaphore opend.\n\n");
 
 
-
 // Warmup for RDSTC
 rdtsc_begin();
 rdtsc_end();
@@ -303,6 +305,7 @@ rdtsc_end();
 // Start counting CPU ticks
 tickStart  = rdtsc_begin();
 
+ int childStart,childEnd,myNumber;
     /* initialize fork processes */
     /* fork child processes */
     for (procCount = 0; procCount < _thread ;procCount++)
@@ -311,32 +314,101 @@ tickStart  = rdtsc_begin();
         if (pid < 0)              /* check for error      */
             printf ("Fork error.\n");
         else if (pid == 0)
+	  {
+	    // Each child has its own share of i interval
+	    myNumber = procCount;
+	    childStart =((_vertice + _thread - 1)/_thread) * procCount;
+	    childEnd = childStart + ((_vertice + _thread - 1)/_thread) -1 ; 
+	    if(childEnd >= _vertice)
+	      childEnd = _vertice -1 ;
+	    break;
+	  }
 	  // printf("Child process created. PID %d",(int)getpid());
-	  break;
+	  
     }
 
     /*****************************************************/
     /*****************  Parent Process *******************/
     /*****************************************************/
+    if(pid !=0)
+      {
+	while(*kWar != -1)
+	  {
+	// Wait for permission to start new round of K
+	sem_wait(sem_issue_newI_parent);
+	int threadNum;
+	int recover;
+	for(threadNum = 0; threadNum<_thread;threadNum++)
+	  {
+	    sem_post(sem_array[threadNum]);
+	    //printf("\nGiving children command to start.\n");
+	  }
+	
+	while(1)
+	  {
+	    if(*iWar == _thread)
+	      break;
+	  }
+	    printf("\nAll processes for current k finished.");	
 
+	    if(*kWar ==  _vertice-1)
+	      {
+		*kWar = -1;
+		break;
+	      }
+	    else
+	      {
+	    *kWar = *kWar + 1;
+	    // printf("\nNext k value: %d",*kWar);
+	    *iWar = 0;
+	    sem_post(sem_issue_newI_parent);
+	      }
 
-    /*****************************************************/
-    /*****************  Child Process ********************/
-    /*****************************************************/
+	  }
 
-
-	   //End counting CPU ticks
+	
+	 //End counting CPU ticks
 	tickEnd = rdtsc_end();
 	tickEnd = tickEnd - tickStart;
 
 	printf("\nCycles spent : %llu\n",tickEnd);
 	printf("\nTime spent : %e (us)\n",(tickEnd)/2394.468);
-	
+	printf("\nTransitive Closure graph output:");
 	Print_graph();
-
 	Clean_Up();
-        exit (0);
 	return 0;
+	
+      }
+    
+
+    /*****************************************************/
+    /*****************  Child Process ********************/
+    /*****************************************************/
+    if(pid == 0)
+      {
+	while(*kWar != -1)
+	  {
+	sem_wait(sem_array[myNumber]);
+	//printf("\nChild semaphone on, start computing.\n");
+	for(;childStart<=childEnd;childStart++)
+	  {
+	    printf("\nStart computing k=%d, i=%d\n",*kWar,childStart);
+
+	    for (jWar = 0; jWar < _vertice; jWar++)
+	      {
+ matrix[childStart][jWar] = matrix[childStart][jWar] || (matrix[childStart][*kWar] && matrix[*kWar][jWar]);
+	      }
+	  }
+	childStart = childEnd - (((_vertice + _thread - 1)/_thread) -1);
+	*iWar = *iWar + 1;
+	//sem_post(sem_array[myNumber]);
+	  }
+
+	exit(0);
+
+      }
+	  
+
 }   
 
 
