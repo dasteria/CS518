@@ -17,7 +17,7 @@
 #include <errno.h>
 #include <assert.h>
 
-
+int final_outX,final_outY;
 
 int procCount;                /* Counter of forks */
 int _vertice;	              /* Number of vertices for the graph we are calculating */
@@ -65,6 +65,7 @@ void Ini_graph(int** mat); // Read input file, number of vertices and 2D transit
 void Print_graph(void);	// Output the graph to verify result
 void Clean_Up(void); // Delete and unattach shared memory and semaphores
 void Create_Sem_Array(int n); // Create an array of semaphores for each process
+void Final_Output(void);
 
 
 // Start of rdstc clock reading
@@ -200,6 +201,23 @@ void Ini_graph(int** matrix)
    printf("\nMatrix initialization complete.\n");
 }
 
+
+void Final_Output(void)
+{
+  printf("%d\n",_thread);
+  printf("%d\n",_vertice);
+  for(final_outX=0;final_outX<_vertice;final_outX++)
+    {
+      for(final_outY=0;final_outY<_vertice;final_outY++)
+	{
+	  if(matrix[final_outX][final_outY] == 1 && final_outX!=final_outY)
+	    printf("%d %d\n",final_outX,final_outY);
+	  else
+	    continue;
+	}
+    }
+}
+
 void Clean_Up(void)
 {
          /* shared memory detach */
@@ -211,7 +229,7 @@ void Clean_Up(void)
 
 	shmdt(kWar);
 	shmctl(shmid_k,IPC_RMID,0);
-	printf("\nShared memory detached.\n");
+	//printf("\nShared memory detached.\n");
 
         /* cleanup semaphores */
         sem_destroy (sem_issue_newI_parent);
@@ -221,7 +239,7 @@ void Clean_Up(void)
 	Delete_Sem_Array(_thread);
 	shmdt(sem_array);
 	shmctl(shmid_sem,IPC_RMID,0);
-	printf("\nSemaphore closed.\n\n");
+	//printf("\nSemaphore closed.\n\n");
 }
 
 void Create_Semaphore(void)
@@ -371,10 +389,13 @@ tickStart  = rdtsc_begin();
 	tickEnd = rdtsc_end();
 	tickEnd = tickEnd - tickStart;
 
-	printf("\nCycles spent : %llu\n",tickEnd);
-	printf("\nTime spent : %e (us)\n",(tickEnd)/2394.468);
+
 	printf("\nTransitive Closure graph output:");
 	Print_graph();
+	printf("\nExpected output:\n");
+	Final_Output();
+	printf("\nCycles spent : %llu\n",tickEnd);
+	printf("\nTime spent : %e (us)\n",(tickEnd)/2394.468);
 	Clean_Up();
 	return 0;
 	
