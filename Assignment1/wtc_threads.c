@@ -225,7 +225,7 @@ void Final_Output(void)
     {
       for(final_outY=0;final_outY<_vertice;final_outY++)
 	{
-	  if(matrix[final_outX][final_outY] == 1)
+	  if(matrix[final_outX][final_outY] == 1 && final_outX != final_outY)
 	    printf("%d %d\n",final_outX,final_outY);
 	  else
 	    continue;
