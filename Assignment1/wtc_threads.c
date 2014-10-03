@@ -21,6 +21,7 @@ int procCount;                 /* Count of # of threads */
 int _vertice;	              /* Number of vertices for the graph we are calculating */
 int _thread;                  /* Number of threads to compute in parallel */
 int jWar;             /* Loop variables for Warshall's algorithm */
+int final_outX,final_outY;
 
 FILE *my_file;                /* Pointer to input file */
 char buf[] = "graph.in";
@@ -51,6 +52,7 @@ void Print_graph(void);	// Output the graph to verify result
 void Clean_Up(void); // Delete and unattach shared memory and semaphores
 void Create_Sem_Array(int n); // Create an array of semaphores for each process
 void *mythread(void *arg);
+void Final_Output(void);
 
 
 // Start of rdstc clock reading
@@ -215,6 +217,22 @@ void *mythread(void *arg)
 	
 }
 
+void Final_Output(void)
+{
+  printf("%d\n",_thread);
+  printf("%d\n",_vertice);
+  for(final_outX=0;final_outX<_vertice;final_outX++)
+    {
+      for(final_outY=0;final_outY<_vertice;final_outY++)
+	{
+	  if(matrix[final_outX][final_outY] == 1)
+	    printf("%d %d\n",final_outX,final_outY);
+	  else
+	    continue;
+	}
+    }
+}
+
 
 
 
@@ -303,10 +321,12 @@ tid = malloc(_thread * sizeof(pthread_t));
 	tickEnd = rdtsc_end();
 	tickEnd = tickEnd - tickStart;
 
+	printf("\nTransitive Closure graph output:\n\n");
+	Print_graph();
+	printf("\nExpected output format:");
+	Final_Output();
 	printf("\nCycles spent : %llu\n",tickEnd);
 	printf("\nTime spent : %e (us)\n",(tickEnd)/2394.468);
-	printf("\nTransitive Closure graph output:");
-	Print_graph();
 	Clean_Up();
 	return 0;
 	  
