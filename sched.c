@@ -651,7 +651,7 @@ repeat_schedule:
 			if(!up->cpu_ticks)
 				continue;
 
-			if(p->counter >> 1 != NICE_TO_TICKS(p->nice);
+			if(p->counter >> 1 != NICE_TO_TICKS(p->nice)
 			{
 					oldcounter = p->counter;
 					p->counter = (p->counter >>1) + NICE_TO_TICKS(p->nice);
